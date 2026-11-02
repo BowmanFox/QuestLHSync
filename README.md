@@ -1,3 +1,39 @@
+# QuestLHSync, BowmanFox fork (1.28-fix2)
+
+This fork patches the SteamVR (PC) driver of [QuestLHSync](https://github.com/CreoleVR/QuestLHSync) 1.28. It is not an
+official release. The headset side is unchanged: use the official 1.28 headset package.
+
+**What it fixes.** With two base stations at the same height facing each other, QuestLHSync can lock onto a wrong
+alignment that puts every lighthouse device about a metre to the side and some 35 cm too high. Lamps line up with it.
+Replayed recordings show the right alignment often had more camera support than the wrong one, but after a Force
+recalibrate the hypotheses never came up with it, and 1.28 asks the worn trackers only about candidates over 1 m from
+the current fit.
+
+**What changed** (`src/driver/sync.cpp`, `sync.h`):
+- While the worn trackers follow the head under both fits, one that keeps the nearest of them within 0.4 m of the
+  head beats one that puts it at least 0.35 m further away. The worn trackers are asked about any candidate more than
+  0.3 m from the current fit, and one they favour takes over on half the support.
+- When the best candidate puts the worn trackers 0.5 m or more from the head, alignments shifted to put them under it
+  are tried too (a grid of heights and small turns around the shift, scored against the sightings, the best refitted).
+- Force recalibrate keeps the height the fit held when that fit kept the worn trackers under the head, keeps the
+  learned pose timing, and ignores a repeat within 3 s.
+- The headset's camera calibration is saved to `%LOCALAPPDATA%\QuestLHSync\calibration.json`, so recordings can be
+  replayed offline with `qlhs_replay --calib`.
+
+Lying down, or with the trackers not worn, it behaves like 1.28.
+
+Replayed recordings, share of time the worn trackers sat under the head: 0% to 93% and 0% to 78% (two sessions that
+had locked onto the wrong alignment after a Force recalibrate), 80% to 94% over a 29-minute session.
+
+**Install** over an official QuestLHSync 1.28 (`QuestLHSync-steamvr-installer.exe`), with Visual Studio 2022 and C++:
+close SteamVR and run `build-and-install.cmd`. It builds only the driver and swaps it into
+`%LOCALAPPDATA%\QuestLHSync\questlhsync`, keeping the 1.28 one in `%LOCALAPPDATA%\QuestLHSync\backup-1.28`.
+`restore-1.28.cmd`, or Reinstall in the official installer, puts 1.28 back.
+
+The upstream README follows.
+
+---
+
 # QuestLHSync
 
 Lighthouse trackers, controllers and base stations aligned to a Quest's or a

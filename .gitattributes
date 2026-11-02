@@ -4,3 +4,4 @@
 magisk/module/META-INF/** text eol=lf
 *.dll binary
 *.lib binary
+*.cmd text eol=crlf

@@ -1439,6 +1439,8 @@ static int SecondBest(const int *c, size_t K) {  // Solver::Score's: all but the
 }
 
 // best hypothesis from scratch on the last ACQ_WIN s: score = thinned support, tight = the same within TIGHT_DEG
+static double Apart(const X4 &a, const X4 &b, const std::vector<V3> &S);
+
 bool Solver::Acquire(double now, X4 &best, int &bs, int &tight) {
   std::vector<std::string> keys;
   std::vector<V3> S, Z;
@@ -1482,6 +1484,7 @@ bool Solver::Acquire(double now, X4 &best, int &bs, int &tight) {
   }
   bs = -1;
   bool have = false;
+  std::vector<std::pair<X4, int>> fits;
   for (X4 x : cand) {
     for (double gate : {1.5, 0.6}) {
       FitR f = Fit(x, S, Z, r, now, gate, nullptr);
@@ -1491,9 +1494,75 @@ bool Solver::Acquire(double now, X4 &best, int &bs, int &tight) {
     std::vector<int> c;
     Support(x, S, Z, t, INLIER, c);
     int sc = Score(c);
+    fits.push_back({x, sc});
     if (sc > bs) { best = x; bs = sc; have = true; }
   }
   if (!have) return false;
+  // The best candidate puts the worn trackers a step from the head while they follow it: alignments that move them
+  // under it are tried too. The trackers give the shift across the floor (their median offset from the head), not the
+  // height, and the shifted fit lands a degree or so off in yaw, outside the sightings' gate: a small grid around the
+  // shift, scored like the hypotheses, and its best few refitted
+  if (body_ && motion_ && bodyoff_) {
+    double moved = 0, db = body_(best), mb = motion_(best, moved);
+    V3 off;
+    if (std::isfinite(db) && db >= kBodyGuide && std::isfinite(mb) && mb >= kBodyCorr && moved >= kBodyMoved &&
+        bodyoff_(best, off)) {
+      std::vector<X4> G;
+      for (double dyaw : {-1.5, -0.75, 0.0, 0.75, 1.5})
+        for (double dx : {-0.15, 0.0, 0.15})
+          for (double dz : {-0.15, 0.0, 0.15})
+            for (double dy = -kGuideRange; dy <= kGuideRange + 1e-9; dy += kGuideDy)
+              G.push_back({Wrap(best[0] + dyaw / kDeg), best[1] + off.x + dx, best[2] + dy, best[3] + off.z + dz});
+      std::vector<int> sub(t.size());
+      for (size_t i = 0; i < sub.size(); i++) sub[i] = (int)i;
+      if (sub.size() > 400) {
+        for (size_t i = 0; i < 400; i++) {
+          std::uniform_int_distribution<size_t> u(i, sub.size() - 1);
+          std::swap(sub[i], sub[u(rng_)]);
+        }
+        sub.resize(400);
+      }
+      std::vector<int> cg;
+      BatchSupport(G, S, Z, t, sub, 1.5, cg);
+      std::vector<size_t> og(G.size());
+      for (size_t i = 0; i < og.size(); i++) og[i] = i;
+      size_t ng = std::min<size_t>(3, og.size());
+      std::partial_sort(og.begin(), og.begin() + ng, og.end(),
+                        [&](size_t a, size_t b) { return SecondBest(&cg[a * K], K) > SecondBest(&cg[b * K], K); });
+      for (size_t i = 0; i < ng; i++) {
+        if (SecondBest(&cg[og[i] * K], K) == 0) break;
+        X4 x = G[og[i]];
+        bool ok = true;
+        for (double gate : {1.5, 0.6}) {
+          FitR f = Fit(x, S, Z, r, now, gate, nullptr);
+          if (!f.ok) { ok = false; break; }
+          x = f.x;
+        }
+        if (!ok) continue;
+        std::vector<int> c;
+        Support(x, S, Z, t, INLIER, c);
+        fits.push_back({x, Score(c)});
+      }
+    }
+  }
+  // The worn devices pick among the candidates as well: one with half the best support or more that keeps them under
+  // the head beats the best supported one when that puts them a step away. Lamps that line up with a wrong alignment
+  // outscore the stations while the head faces them, and the right fit never came up as a candidate again
+  if (body_) {
+    for (auto &f : fits) {
+      if (f.second * 2 < bs || Apart(f.first, best, S) < kBodyApart) continue;
+      double dn, dc;
+      std::string how;
+      if (BodyFavours(f.first, best, dn, dc, how) != 1) continue;
+      if (now - body_said_ > 30) {
+        body_said_ = now;
+        log_(Fmt("acquisition: yaw %+.1f deg (support %d) over yaw %+.1f deg (support %d): %s", f.first[0] * kDeg,
+                 f.second, best[0] * kDeg, bs, how.c_str()));
+      }
+      best = f.first;
+      bs = f.second;
+    }
+  }
   CheckMirror(best, bs, S, Z, r, t, now);
   acq_x_ = best; has_acq_x_ = true;
   std::vector<int> c;
@@ -1574,6 +1643,12 @@ int Solver::BodyFavours(const X4 &a, const X4 &b, double &da, double &db, std::s
     by_place = da < db ? 1 : 2;
     how_place = Fmt("the lighthouse devices worn or held stay near the head one way (%s from it, %s the other way)",
                     Meters(std::min(da, db)).c_str(), Meters(std::max(da, db)).c_str());
+  } else if (std::isfinite(da) && std::isfinite(db) && std::isfinite(ma) && std::isfinite(mb) && moved >= kBodyMoved &&
+             std::min(ma, mb) >= kBodyCorr && std::min(da, db) < kBodyClose && std::fabs(da - db) > kBodyCloseGap) {
+    // worn (they follow the head under both fits): the one that keeps the nearest of them under the head
+    by_place = da < db ? 1 : 2;
+    how_place = Fmt("the worn lighthouse devices stay under the head one way (%.2f m from it, %.2f m the other way)",
+                    std::min(da, db), std::max(da, db));
   }
   // the two kinds of evidence pointing opposite ways say neither is to be trusted (devices carried about without the
   // head, or lying in the room: their motion correlates by chance, +0.23 against -0.24 flipped a well supported fit to
@@ -2275,8 +2350,11 @@ StepStat Solver::Step(double /*now*/) {
       int k = acq_dim_ ? 2 : 1;  // dim rays: other lights line up with a wrong alignment more easily
       double dn, dc;
       std::string how;
-      bool far = has_x_ && !acq_forced_ && Apart(xa, x_, S) > 1.0;
-      int fav = far ? BodyFavours(xa, x_, dn, dc, how) : 0;
+      double apart = has_x_ ? Apart(xa, x_, S) : 0;
+      bool far = has_x_ && !acq_forced_ && apart > 1.0;
+      // the worn devices are asked of any candidate a step off the current fit, not only of a far one: a wrong fit
+      // under a metre off took over on plain support, again and again
+      int fav = has_x_ && !acq_forced_ && apart > kBodyApart ? BodyFavours(xa, x_, dn, dc, how) : 0;
       int need = far && !fav ? 2 * ACQ : ACQ;
       bool enough = sa >= k * need || tight >= k * TIGHT_N || (acq_forced_ && sa >= k * ACQ / 2);
       // The height decides first: a candidate off the kept height doesn't take over without the worn devices for it
@@ -2287,7 +2365,7 @@ StepStat Solver::Step(double /*now*/) {
       bool off_a = kept && std::fabs(xa[2] - hk) > kHeightTol, off_c = kept && has_x_ && std::fabs(x_[2] - hk) > kHeightTol;
       bool back = off_c && !off_a;
       bool wins = back ? (sa >= k * ACQ || tight >= k * TIGHT_N) && sa > 2 * cur + 5
-                       : enough && (sa > 2 * cur + 5 || acq_forced_);
+                       : enough && (sa > 2 * cur + 5 || acq_forced_ || (fav == 1 && 2 * sa >= cur));
       if (!wins) {
       } else if (on_lamp) {
         if (now - kept_said_ > 60) {
@@ -2729,6 +2807,7 @@ Sync::Sync(SyncConfig cfg, LogFn log)
   if (cfg_.arrival_clock) expo_ = kExpoArrival;
   solver_.SetBody([this](const X4 &x) { return BodyDist(x); });
   solver_.SetMotion([this](const X4 &x, double &moved) { return BodyMotion(x, moved); });
+  solver_.SetBodyOffset([this](const X4 &x, V3 &off) { return BodyOffset(x, off); });
   solver_.SetInImage([this](int cam, V3 d) {
     std::lock_guard<std::mutex> g(net_);
     return have_optics_ && optics_.InImage(cam, d, 8.0);
@@ -2836,6 +2915,8 @@ bool Sync::SetCalibration(const std::string &json, std::string *err) {
   std::lock_guard<std::mutex> g(net_);
   if (!optics_.Load(json, err)) return false;
   have_optics_ = true;
+  if (cfg_.per_headset && !cfg_.dir.empty())  // the driver: recordings replay offline (qlhs_replay --calib) with it
+    std::ofstream(Join(cfg_.dir, "calibration.json"), std::ios::binary | std::ios::trunc) << json;
   std::string left_out = optics_.Unused();
   if (!left_out.empty()) log_("cameras " + left_out + " left out: they look down, the base stations hang above");
   // a Quest's frame period is one of two, the other headsets' are learned from their frames
@@ -2953,14 +3034,29 @@ void Sync::ClearAlignment() {
 }
 
 void Sync::ForceRecalibrate() {
+  // a second press within kRecalDebounce is the same request: each one threw the fit found since away again
+  if (last_step_ - last_recal_ < kRecalDebounce) {
+    log_("force recalibrate: pressed again within 3 s, taken as the same request");
+    return;
+  }
+  last_recal_ = last_step_;
+  // the heights the fit held stay if the fit kept the worn trackers under the head: the headset space hasn't moved, and
+  // the wrong fit that comes back after a recalibrate sat 35 cm higher
+  keep_held_.clear();
+  keep_anchor_.clear();
+  if (solver_.has_x()) {
+    X4 cur = solver_.x();
+    double moved = 0, d = BodyDist(cur), m = BodyMotion(cur, moved);
+    if (std::isfinite(d) && d < kBodyClose && std::isfinite(m) && m >= kBodyCorr && moved >= kBodyMoved) {
+      keep_held_ = solver_.held();
+      keep_anchor_ = sfile_.anchor;
+    }
+  }
   ClearAlignment();
   quest_.clear();
   seeded_ = true;
-  {
-    std::lock_guard<std::mutex> g(st_m_);
-    timings_.clear();
-    ApplyTiming();
-  }
+  // the pose timing is the video link's, not the alignment's: kept. Dropped, every acquisition after a recalibrate
+  // started from 18 ms against the 4-9 ms the link had, and its fits came out worse
   // an automatic reference frame is pinned again from SteamVR's stations as they are now (and its level found again);
   // a measured one is the user's own and stays
   if (sfile_.autogen || !sfile_.loaded) {
@@ -3027,6 +3123,35 @@ double Sync::BodyDist(const X4 &x) {
   std::vector<double> v;
   for (auto &kv : nearest) v.push_back(kv.second);
   return Median(v);
+}
+
+// the median, over 0.1 s steps, of the horizontal offset from the nearest worn or held lighthouse device to the head,
+// were x the alignment: the shift that puts it under the head
+bool Sync::BodyOffset(const X4 &x, V3 &off) {
+  std::vector<BodyS> b;
+  {
+    std::lock_guard<std::mutex> g(body_m_);
+    b.assign(body_.begin(), body_.end());
+  }
+  M3 C;
+  V3 tc;
+  frame_.Rotation(C, tc);
+  double c = std::cos(x[0]), s = std::sin(x[0]);
+  std::map<long long, std::pair<double, V3>> nearest;
+  for (const BodyS &e : b) {
+    M3 R;
+    V3 h;
+    if (!poses_.At(e.t, R, h)) continue;
+    V3 q = RyMul(c, s, C * e.p + tc) + V3{x[1], x[2], x[3]};
+    double d = std::hypot(q.x - h.x, q.z - h.z);
+    auto it = nearest.emplace((long long)std::floor(e.t * 10), std::make_pair(d, V3{h.x - q.x, 0, h.z - q.z})).first;
+    if (d < it->second.first) it->second = {d, V3{h.x - q.x, 0, h.z - q.z}};
+  }
+  if (nearest.size() < 20) return false;
+  std::vector<double> vx, vz;
+  for (auto &kv : nearest) { vx.push_back(kv.second.second.x); vz.push_back(kv.second.second.z); }
+  off = V3{Median(vx), 0, Median(vz)};
+  return true;
 }
 
 // How the worn or held lighthouse devices' horizontal motion follows the head's, were x the alignment: the
@@ -3509,6 +3634,11 @@ Transform Sync::Tick(double now) {
       sfile_.anchor_R = best->second.second;
       sfile_.SaveAuto(Join(cfg_.dir, "stations.json"));
       log_("reference frame set: anchor " + best->first);
+      if (!keep_held_.empty() && best->first == keep_anchor_) {
+        solver_.SetHeld(keep_held_);
+        log_("force recalibrate: the height the fit held is kept (it kept the worn trackers under the head)");
+      }
+      keep_held_.clear();
     } else if (sfile_.autogen && !frame_.layout() && raw.count(sfile_.anchor)) {  // follows a moved anchor
       auto &a = raw[sfile_.anchor];
       if (RotDeg(sfile_.anchor_R * T(a.second)) > kMaxRot || norm(a.first - sfile_.anchor_p) > kMoved) {

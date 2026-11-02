@@ -113,6 +113,19 @@ constexpr double kBodyNear = 1.0, kBodyGap = 1.0;  // m
 // ... or their motion does (Sync::BodyMotion): when the head went kBodyMoved, and they follow it one way by kBodyCorr
 // and the other way not (a fit and its mirror move them opposite ways)
 constexpr double kBodyMoved = 2.0, kBodyCorr = 0.2;  // m, correlation
+// ... or, while they follow the head under both fits (worn, not lying about), one fit keeps the nearest of them within
+// kBodyClose of the head and the other kBodyCloseGap further. Two stations facing each other at one height: a wrong
+// fit about a metre off, which lamps line up with, put the nearest worn tracker 0.6-1.0 m from the head where the
+// right one had it at 0.0-0.25 m, and kBodyGap let it through
+constexpr double kBodyClose = 0.4, kBodyCloseGap = 0.35;  // m
+// a candidate further than this from the current fit (its farthest station) is checked against the worn devices
+constexpr double kBodyApart = 0.3;  // m
+// a second Force recalibrate within this is the same request (a double click, the dashboard and its desktop copy)
+constexpr double kRecalDebounce = 3.0;  // s
+// a candidate that puts the nearest worn tracker kBodyGuide or further from the head while they follow it: the fits
+// that move them under the head (by their median offset from it) are tried as well, at kGuideDy steps up and down
+// within kGuideRange. The right fit outscored the wrong one and still never came up: the hypotheses missed it
+constexpr double kBodyGuide = 0.5, kGuideDy = 0.1, kGuideRange = 0.6;  // m
 // the height offset: both spaces stand on the floor, so a moved headset space turns and slides but keeps its height
 // (sessions with several moves: 2.06-2.23 m; wrong fits that lamps held: 0.75-1.74 m). How long the fit held each
 // height (kHeightBin steps) while locked and pinned is kept; from kHeightKeep s on the most-held one, a candidate more
@@ -322,6 +335,12 @@ class Solver {
   // how far the head went meanwhile (m); NaN without motion
   using MotionFn = std::function<double(const X4 &, double &)>;
   void SetMotion(MotionFn f) { motion_ = std::move(f); }
+  // the median horizontal offset from the nearest worn or held lighthouse device to the head, were x the alignment
+  using OffsetFn = std::function<bool(const X4 &, V3 &)>;
+  void SetBodyOffset(OffsetFn f) { bodyoff_ = std::move(f); }
+  // the heights the fit held (Force recalibrate keeps them when the fit it drops kept the worn trackers under the head)
+  std::map<int, double> held() const { return held_h_; }
+  void SetHeld(std::map<int, double> h) { held_h_ = std::move(h); }
   void Reset(const X4 &x);
   void Clear();  // forgets the sightings, the alignment and what hung on them; the stations stay (Sync::ForceRecalibrate)
   // g: the frame's time on the headset's clock (NaN until the frame grid is known)
@@ -400,6 +419,7 @@ class Solver {
   int resets_ = 0;
   BodyFn body_;
   MotionFn motion_;
+  OffsetFn bodyoff_;
   bool acq_forced_ = false;  // the last acquisition overruled the current fit by the mirror check
   bool acq_dim_ = false;     // ... was found on dim rays too (Bright): it needs twice the support
   std::atomic<bool> starved_{false};  // the recent rays are under 5% bright, of 200 or more (see Bright)
@@ -414,6 +434,7 @@ class Solver {
   double DimGate() const { return starved_ ? INLIER : -1; }
   int amb_state_ = 0;        // the mirror check's last outcome, logged when it changes
   double kept_said_ = -1e18;  // the last log of a far acquisition the worn devices turned down
+  double body_said_ = -1e18;  // the last log of a candidate the worn devices picked over a better supported one
   std::map<int, double> held_h_;  // s the fit held each height (kHeightBin steps), locked and pinned
   double held_t_ = -1e18;         // the Step that last added to it
   bool KeptHeight(double &h) const;  // the most-held height, once held kHeightKeep s
@@ -600,6 +621,7 @@ class Sync {
   std::map<int, double> body_last_;
   double BodyDist(const X4 &x);
   double BodyMotion(const X4 &x, double &moved);
+  bool BodyOffset(const X4 &x, V3 &off);
 
   void LoadState();
   // state.json lives in headsets/<model>-<serial hash>/ once the headset is known (before that, and for the tools,
@@ -627,6 +649,9 @@ class Sync {
   std::map<std::string, StationsFile::Place> place_prior_;  // kept by earlier sessions
   std::map<std::string, int> place_off_;  // measurements in a row far off the kept place
   double last_place_ = 0, place_saved_ = -1e18;
+  double last_recal_ = -1e18;  // the last Force recalibrate taken (Tick time)
+  std::map<int, double> keep_held_;  // Force recalibrate: the held heights to give back once the same anchor is pinned
+  std::string keep_anchor_;
   void SaveState(const X4 &x, const std::map<std::string, V3> &cs, bool force = false);  // force: even if unmoved
   bool Seed(const std::map<std::string, V3> &raw, X4 &x, double &miss);
 };
