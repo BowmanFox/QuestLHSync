@@ -116,6 +116,7 @@ static std::atomic<bool> g_off{false};         // a wired headset: poses pass un
 static std::atomic<bool> g_hide{false};        // the headset is about to place the lighthouse devices
 static std::atomic<double> g_unplaced{0};      // when a controller or tracker first came while not placed (0: none)
 constexpr double kHideFor = 20;                // s from then, at most
+static std::atomic<bool> g_trackers_off{false};  // the dashboard's Turn trackers off: games see them switched off
 struct StationPose {
   char serial[32];
   int cls;
@@ -192,6 +193,14 @@ static bool Apply(uint32_t id, vr::DriverPose_t &p) {
       g_sync->OnBodyPose((int)id, t, V3{pos[0], pos[1], pos[2]});
       if (g_gravity) g_gravity->OnPose((int)id, t, V3{pos[0], pos[1], pos[2]}, Quat{q.w, q.x, q.y, q.z});
     }
+  }
+  // switched off from the dashboard: to SteamVR and games the trackers are off, as if powered down (VRChat leaves full
+  // body). Their raw poses above still reach the solver and the levelling, so they're in place the moment they're on
+  if (d.cls == vr::TrackedDeviceClass_GenericTracker && g_trackers_off.load(std::memory_order_relaxed)) {
+    p.poseIsValid = false;
+    p.deviceIsConnected = false;
+    p.result = vr::TrackingResult_Uninitialized;
+    return true;
   }
   Xf x;
   if (!ReadXf(x)) {
@@ -605,7 +614,17 @@ class Provider : public vr::IServerTrackedDeviceProvider {
       case QLHS_CMD_RECORD_ON: SetRecording(true); break;
       case QLHS_CMD_RECORD_OFF: SetRecording(false); break;
       case QLHS_CMD_RECALIBRATE: g_sync->ForceRecalibrate(); break;
+      case QLHS_CMD_TRACKERS_OFF: SetTrackersOff(true); break;
+      case QLHS_CMD_TRACKERS_ON: SetTrackersOff(false); break;
     }
+  }
+
+  // not kept: SteamVR starts with the trackers on
+  void SetTrackersOff(bool off) {
+    if (g_trackers_off.exchange(off) == off) return;
+    Log(off ? "trackers off: games see them as switched off (QuestLHSync keeps following them)"
+            : "trackers on: back where QuestLHSync places them");
+    g_sync->Rec(QpcNow(), "I trackers %s", off ? "off" : "on");
   }
 
   void Publish(double now) {
@@ -642,6 +661,7 @@ class Provider : public vr::IServerTrackedDeviceProvider {
     t->sight_rate = s.sight_rate;
     t->spot_rate = s.spot_rate;
     t->head_still = s.head_still;
+    t->trackers_off = g_trackers_off.load();
     t->rtt_ms = s.rtt * 1000;
     t->expo_ms = s.expo * 1000;
     t->expo_learned = s.timing_learned;

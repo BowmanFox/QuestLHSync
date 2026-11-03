@@ -1,7 +1,14 @@
-# QuestLHSync, BowmanFox fork (1.28-fix2)
+# QuestLHSync, BowmanFox fork (1.28-fix3)
 
-This fork patches the SteamVR (PC) driver of [QuestLHSync](https://github.com/CreoleVR/QuestLHSync) 1.28. It is not an
-official release. The headset side is unchanged: use the official 1.28 headset package.
+This fork patches the PC side of [QuestLHSync](https://github.com/CreoleVR/QuestLHSync) 1.28: the SteamVR driver and
+the dashboard app. It is not an official release. The headset side is unchanged: use the official 1.28 headset package.
+
+**Turn trackers off** (fix3). A button on the QuestLHSync dashboard page makes SteamVR and games see the lighthouse
+trackers as switched off, as if powered down, so VRChat leaves full body and its Seated/Standing toggle comes back in
+place of Calibrate. VRChat often keeps Calibrate until it restarts; restart VRChat (not SteamVR) if it does, and keep
+VRChat's Freeze Trackers on Disconnect off. QuestLHSync goes on following the trackers meanwhile, so Turn trackers on
+brings them back in place. Only trackers go off: base stations and lighthouse controllers are placed as before. A
+SteamVR restart turns them back on.
 
 **What it fixes.** With two base stations at the same height facing each other, QuestLHSync can lock onto a wrong
 alignment that puts every lighthouse device about a metre to the side and some 35 cm too high. Lamps line up with it.
@@ -26,9 +33,10 @@ Replayed recordings, share of time the worn trackers sat under the head: 0% to 9
 had locked onto the wrong alignment after a Force recalibrate), 80% to 94% over a 29-minute session.
 
 **Install** over an official QuestLHSync 1.28 (`QuestLHSync-steamvr-installer.exe`), with Visual Studio 2022 and C++:
-close SteamVR and run `build-and-install.cmd`. It builds only the driver and swaps it into
-`%LOCALAPPDATA%\QuestLHSync\questlhsync`, keeping the 1.28 one in `%LOCALAPPDATA%\QuestLHSync\backup-1.28`.
-`restore-1.28.cmd`, or Reinstall in the official installer, puts 1.28 back.
+close SteamVR and run `build-and-install.cmd`. It builds the driver and the dashboard app and swaps them into
+`%LOCALAPPDATA%\QuestLHSync\questlhsync`, keeping the 1.28 ones in `%LOCALAPPDATA%\QuestLHSync\backup-1.28`
+(`build-and-install.cmd build` only builds, into `out\`). `restore-1.28.cmd`, or Reinstall in the official installer,
+puts 1.28 back.
 
 The upstream README follows.
 

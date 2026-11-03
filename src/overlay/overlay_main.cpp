@@ -1,7 +1,8 @@
 // QuestLHSync.exe: the SteamVR dashboard page. Started by the driver each session, exits with SteamVR.
 // Reads the driver's status from the shared memory (qlhs_status.h), draws it with GDI at 2x and downsamples
 // (anti-aliased shapes and text), and sends the buttons back as commands.
-//   QuestLHSync.exe --preview out.png [locked|acquiring|still|frozen|searching|nohmd]   renders a sample page, no VR
+//   QuestLHSync.exe --preview out.png [locked|acquiring|still|frozen|searching|nohmd|paused|trackersoff]
+//     renders a sample page, no VR
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
@@ -140,6 +141,12 @@ struct Page {
 
 static void StateText(const QlhsStatus &s, bool stale, std::wstring &title, std::wstring &sub, uint32_t &color) {
   if (stale) { title = L"Driver not running"; sub = L"The QuestLHSync driver isn't updating. Restart SteamVR."; color = col::red; return; }
+  if (s.trackers_off && s.state != QLHS_WIRED) {  // the cards below still show how the alignment goes
+    title = L"Trackers off";
+    sub = L"Games see your trackers as switched off. Still Calibrate in VRChat? Restart VRChat for Seated/Standing.";
+    color = col::amber;
+    return;
+  }
   switch (s.state) {
     case QLHS_NO_HMD:
       title = L"Waiting for a Quest or Steam Frame";
@@ -272,6 +279,7 @@ static void Draw(Canvas &cv, Page &pg, const QlhsStatus &s, bool stale) {
   int ly = top + ch + 20, lh = 150;
   p.Rect(48, ly, W - 96, lh, col::card, 14);
   p.Text(70, ly + 16, L"LOG", label, col::faint);
+  p.Text(W - 70, ly + 15, L"Settings: steamvr.vrsettings → driver_questlhsync", small, col::faint, 2);
   uint32_t n = s.nlog;
   int shown = 0;
   for (uint32_t i = 0; i < 5 && i < n; i++) {
@@ -289,6 +297,9 @@ static void Draw(Canvas &cv, Page &pg, const QlhsStatus &s, bool stale) {
   pg.buttons.push_back({304, by, 210, bh, s.recording ? QLHS_CMD_RECORD_OFF : QLHS_CMD_RECORD_ON,
                         s.recording ? L"Stop recording" : L"Record session", false});
   pg.buttons.push_back({530, by, 240, bh, QLHS_CMD_RECALIBRATE, L"Force recalibrate", false});
+  // apart from the others, at the right: games see the trackers switched off (VRChat leaves full body) or back on
+  pg.buttons.push_back({W - 48 - 240, by, 240, bh, s.trackers_off ? QLHS_CMD_TRACKERS_ON : QLHS_CMD_TRACKERS_OFF,
+                        s.trackers_off ? L"Turn trackers on" : L"Turn trackers off", s.trackers_off != 0});
   for (size_t i = 0; i < pg.buttons.size(); i++) {
     auto &b = pg.buttons[i];
     bool hov = (int)i == pg.hover;
@@ -297,7 +308,6 @@ static void Draw(Canvas &cv, Page &pg, const QlhsStatus &s, bool stale) {
     if (b.cmd == QLHS_CMD_RECORD_OFF) p.Dot(b.x + 26, b.y + bh / 2, 6, col::red);
     p.Text(b.x + b.w / 2 + (b.cmd == QLHS_CMD_RECORD_OFF ? 10 : 0), b.y + 11, b.label, h2, col::text, 1);
   }
-  p.Text(W - 48, by + 14, L"Settings: steamvr.vrsettings → driver_questlhsync", small, col::faint, 2);
 }
 
 // 2x2 box filter + BGRX -> RGBA (alpha 255)
@@ -433,6 +443,11 @@ static QlhsStatus Sample(const char *kind) {
   if (!strcmp(kind, "searching")) { s.state = QLHS_SEARCHING; s.headset_addr[0] = 0; s.cam_fps = 0; s.rtt_ms = 0; s.locked = 0; s.nfit = 0; s.med_deg = -1; s.yaw_deg = 0; s.locked_for = -1; }
   if (!strcmp(kind, "nohmd")) { s.state = QLHS_NO_HMD; strcpy(s.hmd, "PlayStation VR2"); }
   if (!strcmp(kind, "paused")) s.paused = 1;
+  if (!strcmp(kind, "trackersoff")) {
+    s.trackers_off = 1;
+    strcpy(s.log[s.nlog % 8], "04:58:30  trackers off: games see them as switched off (QuestLHSync keeps following them)");
+    s.nlog++;
+  }
   return s;
 }
 

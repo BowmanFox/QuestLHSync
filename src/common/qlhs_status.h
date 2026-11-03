@@ -8,7 +8,7 @@
 #define QLHS_OVERLAY_MUTEX L"Local\\QuestLHSyncOverlay"
 #define QLHS_MAGIC 0x53484C51u  // "QLHS"
 #define QLHS_VERSION 2
-#define QLHS_RELEASE "1.28-fix2"  // magisk/build_module.py reads it
+#define QLHS_RELEASE "1.28-fix3"  // magisk/build_module.py reads it
 
 enum QlhsState : int32_t {
   QLHS_STARTING = 0,
@@ -31,6 +31,11 @@ enum QlhsCmd : int32_t {
   QLHS_CMD_RECORD_ON = 4,
   QLHS_CMD_RECORD_OFF = 5,
   QLHS_CMD_RECALIBRATE = 6,  // drop every learned and saved alignment of this headset and start over
+  // 1.28-fix3: SteamVR and games see the lighthouse trackers as switched off (VRChat leaves full body, and shows
+  // Seated/Standing again once it restarts without them), while QuestLHSync goes on following them; back on, they're
+  // in place at once. Not kept: SteamVR starts with them on. An older driver ignores both.
+  QLHS_CMD_TRACKERS_OFF = 7,
+  QLHS_CMD_TRACKERS_ON = 8,
 };
 
 #pragma pack(push, 8)
@@ -57,8 +62,10 @@ struct QlhsStatus {
   double cam_fps;       // camera frames/s: the Quest's side cameras (all four from module v1.0), the Frame's four
   double sight_rate;    // bright spots/s the alignment uses
   double spot_rate;     // bright spots/s the cameras see
-  int32_t head_still, pad2;  // 1: the headset hasn't moved for 2 s, its frames wait; 2: for 10 s while its cameras
-                             // see the room move (SteamVR isn't getting the head's motion)
+  int32_t head_still;    // 1: the headset hasn't moved for 2 s, its frames wait; 2: for 10 s while its cameras see
+                         // the room move (SteamVR isn't getting the head's motion)
+  int32_t trackers_off;  // 1: the trackers are switched off for games (QLHS_CMD_TRACKERS_OFF). Padding before
+                         // 1.28-fix3, so the layout is the same: an older dashboard or driver reads or leaves 0 here
   double rtt_ms;        // network round trip (clock sync)
   double expo_ms;       // frame grid -> pose time
   int32_t expo_learned, pad0;
